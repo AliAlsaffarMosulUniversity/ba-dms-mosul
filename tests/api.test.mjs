@@ -6,6 +6,8 @@ class MemoryStore{
  data=new Map();counter=0;
  async get(col,id){return structuredClone(this.data.get(col+'/'+id)||null);}
  async list(col){return structuredClone([...this.data].filter(([key])=>key.startsWith(col+'/')).map(([,v])=>v));}
+ async getMany(col,ids){return (await Promise.all(ids.map(id=>this.get(col,id)))).filter(Boolean);}
+ async receiptsForNotice(id){return [...this.data].filter(([key,row])=>key.startsWith('receipts/')&&row.noticeId===id).map(([,row])=>structuredClone(row));}
  async set(col,id,row,version){const old=await this.get(col,id);if(old?old._version!==version:!!version){const e=new Error('conflict');e.status=409;throw e;}const value={...structuredClone(row),id,_version:String(++this.counter)};this.data.set(col+'/'+id,value);return value;}
 }
 const row=(extra={})=>({date:'2026-11-01',start:'08:30',end:'09:30',group:'A',room:'3201',title:'إدارة',staff:['p1'],...extra});
@@ -37,3 +39,13 @@ test('draft visibility, approval, publication and cross-plan conflicts',async()=
 test('head cannot change roles',async()=>{const {call,store}=await fixture();const t=await store.get('users','t');assert.equal((await call('/users/t','PUT',{...t,role:'admin'},'h')).status,403);});
 test('oversized requests rejected before JSON parsing',async()=>{const {call}=await fixture();assert.equal((await call('/profiles','POST',{name:'x'.repeat(190000)})).status,413);});
 test('stale timetable document cannot overwrite another plan',async()=>{const {store}=await fixture();const a=await store.set('state','timetable',{plans:[]});await store.set('state','timetable',{plans:[{id:'one'}]},a._version);await assert.rejects(()=>store.set('state','timetable',{plans:[{id:'two'}]},a._version));assert.equal((await store.get('state','timetable')).plans[0].id,'one');});
+
+ test('notice reads never scan unrelated receipts even past collection cap',async()=>{
+ const {call,store}=await fixture();
+ const n=(await call('/notices','POST',{title:'notice',content:'body',recipients:['p1'],links:[]})).data;
+ await call('/notices/'+n.id+'/view','POST',{},'t');
+ for(let i=0;i<2500;i++)store.data.set('receipts/unrelated'+i,{id:'unrelated'+i,noticeId:'other',userId:'other'});
+ const original=store.list.bind(store);store.list=async col=>{assert.notEqual(col,'receipts');return original(col);};
+ const page=await call('/notices','GET',undefined,'t');assert.equal(page.status,200);assert.ok(page.data[0].receipt.viewedAt);
+ const report=await call('/notices/'+n.id+'/receipts');assert.equal(report.status,200);assert.equal(report.data.length,1);assert.ok(report.data[0].viewedAt);
+ });
