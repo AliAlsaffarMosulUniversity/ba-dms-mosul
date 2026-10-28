@@ -75,8 +75,9 @@ export function createHandler(dependencies={}){
    if(path==='/notices'&&method==='GET'){
     const list=(await store.list('notices')).filter(n=>visible(n,user)).sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
     // Read only this user's receipt for each accessible notice; never expose other receipts to teachers.
-    const receipts=(await store.list('receipts')).filter(r=>r.userId===user.id);
-    return reply(list.slice(0,100).map(n=>({...n,receipt:receipts.find(r=>r.noticeId===n.id)||null})));
+    const page=list.slice(0,100);
+    const receipts=await store.getMany('receipts',await Promise.all(page.map(n=>receiptId(n.id,user.id))));
+    return reply(page.map(n=>({...n,receipt:receipts.find(r=>r.noticeId===n.id)||null})));
    }
    if(path==='/notices'&&method==='POST'){
     manager(user);const profiles=await store.list('profiles');const ids=new Set(profiles.map(p=>p.id));
@@ -86,7 +87,7 @@ export function createHandler(dependencies={}){
    const noticePath=path.match(/^\/notices\/([\w-]+)\/(view|ack|receipts|archive)$/);
    if(noticePath){
     const [,id,action]=noticePath,n=await store.get('notices',id);if(!n||!visible(n,user))fail(404,'التبليغ غير موجود');
-    if(action==='receipts'&&method==='GET'){manager(user);const receipts=(await store.list('receipts')).filter(r=>r.noticeId===id);const profiles=await store.list('profiles');return reply(n.recipients.map(profileId=>({name:profiles.find(p=>p.id===profileId)?.name||'تدريسي',...(receipts.find(r=>r.profileId===profileId)||{})})));}
+    if(action==='receipts'&&method==='GET'){manager(user);const receipts=await store.receiptsForNotice(id);const profiles=await store.list('profiles');return reply(n.recipients.map(profileId=>({name:profiles.find(p=>p.id===profileId)?.name||'تدريسي',...(receipts.find(r=>r.profileId===profileId)||{})})));}
     if(action==='archive'&&method==='POST'){manager(user);version(body,n);return reply(await store.set('notices',id,{...n,archived:!n.archived},n._version));}
     if(['view','ack'].includes(action)&&method==='POST'){
      if(!n.recipients.includes(user.profileId))fail(403,'أنت لست ضمن المستلمين');
