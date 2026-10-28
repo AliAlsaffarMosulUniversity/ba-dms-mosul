@@ -28,3 +28,16 @@ test('Firestore REST serializes fields, uses create/update preconditions and doe
  };
  try{const store=new Store(env);assert.equal(await store.get('profiles','p1'),null);const first=await store.set('profiles','p1',{name:'اسم',active:true,count:3,links:[{label:'ملف',url:'https://example.org'}]});assert.equal(first.links[0].label,'ملف');assert.equal(first.count,3);assert.deepEqual(commits[0].writes[0].currentDocument,{exists:false});await store.set('profiles','p1',{...first,name:'محدث'},first._version);assert.deepEqual(commits[1].writes[0].currentDocument,{updateTime:'fixture-time'});assert.equal(commits[1].writes[0].update.fields._version,undefined);}finally{globalThis.fetch=original;}
 });
+
+test('Firestore batch reads are bounded and precondition failures stay actionable',async()=>{
+ const original=globalThis.fetch;const store=new Store({FIREBASE_PROJECT_ID:'project-test',FIREBASE_SERVICE_ACCOUNT:JSON.stringify({project_id:'project-test',private_key:'unused-cached-token',client_email:'service@example.org'})});
+ try{
+  const calls=[];globalThis.fetch=async(url,init)=>{calls.push({url,body:JSON.parse(init.body)});return Response.json([{missing:'missing'},{found:{name:'projects/project-test/databases/(default)/documents/cloud_v3_receipts/r1',fields:{noticeId:{stringValue:'n1'}},updateTime:'v1'}}]);};
+  assert.deepEqual(await store.getMany('receipts',[]),[]);assert.equal(calls.length,0);
+  assert.equal((await store.getMany('receipts',['r1','r2']))[0].id,'r1');assert.ok(calls[0].url.endsWith(':batchGet'));assert.equal(calls[0].body.documents.length,2);
+  await assert.rejects(()=>store.getMany('receipts',Array(101).fill('r1')));
+  await store.receiptsForNotice('n1');assert.equal(calls[1].body.structuredQuery.where.fieldFilter.value.stringValue,'n1');
+  globalThis.fetch=async()=>Response.json({error:{status:'FAILED_PRECONDITION'}},{status:400});await assert.rejects(()=>store.call(':commit'),e=>e.status===409);
+  globalThis.fetch=async()=>Response.json({error:{status:'INVALID_ARGUMENT'}},{status:400});await assert.rejects(()=>store.call(':commit'),e=>e.status===503);
+ }finally{globalThis.fetch=original;}
+});
