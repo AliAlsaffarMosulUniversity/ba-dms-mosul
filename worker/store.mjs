@@ -26,10 +26,21 @@ export class Store {
   async call(path,init={}){
     const response=await fetch(this.base+path,{...init,headers:{Authorization:'Bearer '+await googleToken(this.env),'Content-Type':'application/json',...init.headers}});
     if(response.status===404)return null;
-    if(!response.ok){const error=new Error(response.status===409||response.status===400||response.status===412?'تعذر الحفظ بسبب تعديل متزامن، أعد تحميل البيانات':'تعذر الاتصال بقاعدة البيانات');error.status=response.status===409||response.status===412?409:503;throw error;}
+    if(!response.ok){const detail=await response.json().catch(()=>({}));const conflict=[409,412].includes(response.status)||(response.status===400&&detail.error?.status==='FAILED_PRECONDITION');const error=new Error(conflict?'تعذر الحفظ بسبب تعديل متزامن، أعد تحميل البيانات':'تعذر الاتصال بقاعدة البيانات');error.status=conflict?409:503;throw error;}
     return response.status===204?null:response.json();
   }
   async get(col,id){return decode(await this.call('/'+this.path(col,id)));}
+  async getMany(col,ids){
+    if(!ids.length)return [];
+    if(ids.length>100)throw new Error('Batch read limit exceeded');
+    const root=this.base.replace('https://firestore.googleapis.com/v1/','');
+    const data=await this.call(':batchGet',{method:'POST',body:JSON.stringify({documents:[...new Set(ids)].map(id=>root+'/'+this.path(col,id))})});
+    return (data||[]).filter(row=>row.found).map(row=>decode(row.found));
+  }
+  async receiptsForNotice(noticeId){
+    const data=await this.call(':runQuery',{method:'POST',body:JSON.stringify({structuredQuery:{from:[{collectionId:'cloud_v3_receipts'}],where:{fieldFilter:{field:{fieldPath:'noticeId'},op:'EQUAL',value:{stringValue:noticeId}}},limit:100}})});
+    return (data||[]).filter(row=>row.document).map(row=>decode(row.document));
+  }
   async list(col){
     let rows=[],next='';
     do{const data=await this.call(`/cloud_v3_${col}?pageSize=200${next?'&pageToken='+encodeURIComponent(next):''}`);rows.push(...(data?.documents||[]).map(decode));next=data?.nextPageToken||'';if(rows.length>2000)throw new Error('حد النسخة المخففة 2000 سجل للمجموعة');}while(next);
